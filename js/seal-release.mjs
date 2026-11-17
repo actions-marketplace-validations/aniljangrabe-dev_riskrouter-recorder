@@ -2,7 +2,7 @@
 /**
  * seal-release: seal each file of a software release, so that later anyone can
  * show the artefact they hold is the one that shipped, on the day it shipped.
- * Used by the GitHub Action in ../github-action, and runnable on its own:
+ * Used by the GitHub Action (../action.yml; the older path ../github-action still works), and runnable on its own:
  *
  *   RISKROUTER_API_KEY=rr_... node seal-release.mjs --product acme/gateway --version 4.2.1 \
  *     [--sbom sbom.cdx.json] [--out riskrouter-receipts] dist/*.tar.gz dist/*.zip
@@ -60,6 +60,24 @@ export async function sealRelease({ files, product, version, sbom = null, out = 
   return results;
 }
 
+// The run's summary page on GitHub: what was sealed, where each receipt is, and how anyone checks one. File names
+// are escaped, never trusted as Markdown; a file that was not sealed says so and why.
+export function stepSummary(results, out) {
+  const cell = (s) => String(s).replace(/[\\`*_[\]<>|]/g, (c) => `\\${c}`).replace(/\r?\n/g, ' ');
+  const sealed = results.filter((r) => r.recorded).length;
+  const rows = results.map((r) => (r.recorded
+    ? `| ${cell(path.basename(r.file))} | sealed | ${r.leaf_index} | ${cell(r.receipt)} |`
+    : `| ${cell(path.basename(r.file))} | **not sealed**: ${cell(r.reason)} | | |`));
+  return [
+    `### RiskRouter: ${sealed} of ${results.length} file${results.length === 1 ? '' : 's'} sealed`, '',
+    '| File | Result | Log entry | Receipt |', '| --- | --- | --- | --- |', ...rows, '',
+    `Only each record's salted SHA-256 left the runner. Keep the receipts in \`${cell(out)}\` with the release: anyone can`,
+    'check one offline with the open-source verifiers (https://github.com/aniljangrabe-dev/riskrouter-verify), and',
+    "compare the file's SHA-256 with the receipt's `artefact_digest`. Without the receipt, nobody can tie the log entry",
+    'to the file.', '',
+  ].join('\n');
+}
+
 async function main(argv) {
   const opts = { files: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -73,6 +91,8 @@ async function main(argv) {
     process.exit(1);
   }
   const out = opts.out || 'riskrouter-receipts';
+  // The journal lives in the receipts directory, which does not exist yet on a fresh runner.
+  fs.mkdirSync(opts.journal ? path.dirname(opts.journal) : out, { recursive: true });
   const recorder = createRecorder({ journal: opts.journal || path.join(out, 'evidence-journal.jsonl'), flushIntervalMs: 3_600_000 });
   let results;
   try {
@@ -84,6 +104,7 @@ async function main(argv) {
     console.log(r.recorded ? `sealed   ${r.file}  leaf ${r.leaf_index}  receipt ${r.receipt}` : `NOT SEALED ${r.file}: ${r.reason}`);
   }
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `receipts=${out}\n`);
+  if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, stepSummary(results, out));
   process.exit(results.every((r) => r.recorded) ? 0 : 1);
 }
 

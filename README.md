@@ -11,6 +11,10 @@ the journal keeps everything.
 | Python 3.8+ | `pip install riskrouter-recorder` | [`python/README.md`](python/README.md) |
 | Node 20+ | `npm install riskrouter-recorder` | [`js/README.md`](js/README.md) |
 
+Using GitHub Actions? This repository is also the **Seal a release with RiskRouter** action: one step seals
+each file of a release and leaves a receipt anyone can verify offline. See
+[Seal a release from GitHub Actions](#seal-a-release-from-github-actions).
+
 What is in them:
 
 - a recorder with a local journal, batching, retries and completeness chains;
@@ -62,7 +66,7 @@ jobs:
       - run: gh release download "$GITHUB_REF_NAME" --dir dist
         env: { GH_TOKEN: "${{ github.token }}" }
       - id: seal
-        uses: aniljangrabe-dev/riskrouter-recorder/github-action@main
+        uses: aniljangrabe-dev/riskrouter-recorder@main
         with:
           api-key: ${{ secrets.RISKROUTER_API_KEY }}   # free sandbox key: https://riskrouter.eu/integrate
           files: dist/*
@@ -70,6 +74,20 @@ jobs:
       - run: gh release upload "$GITHUB_REF_NAME" ${{ steps.seal.outputs.receipts }}/*.riskrouter.json
         env: { GH_TOKEN: "${{ github.token }}" }
 ```
+
+| Input | | |
+| --- | --- | --- |
+| `api-key` | required | Your key, from a secret. A free sandbox key is at https://riskrouter.eu/integrate (no form, no email; up to 50 entries a day). |
+| `files` | required | Shell globs, separated by spaces or new lines, such as `dist/*.tar.gz dist/*.zip`. A glob that matches nothing fails the step. |
+| `product` | the repository | The product's name in each record. |
+| `version` | the tag or branch | The version in each record. |
+| `sbom` | none | A CycloneDX or SPDX file. With it, each record is a `cra.release`. |
+| `out` | `riskrouter-receipts` | Where the receipts and the journal go. |
+| `api` | `https://api.riskrouter.eu` | Another instance of the log, if you run your own. |
+
+The step's output `receipts` names that directory, and the run's summary page lists each file, its log entry and
+its receipt. A file that could not be recorded is reported as not sealed, and the step fails: it never reports a
+seal it does not have.
 
 Each `<file>.riskrouter.json` is a receipt the published verifiers check offline. Attaching it to the release makes
 the record and its salt public, which is fine for a public release; for a private one, keep the receipts privately
