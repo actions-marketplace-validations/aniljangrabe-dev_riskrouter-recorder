@@ -163,6 +163,13 @@ record and says how to check it (it runs no script and makes no request), and a 
 whose own digest is sealed so the handover is evidence too. It holds your records and salts: hand it only to whom
 you would show the records.
 
+Each record also gets a page of its own in `records/`, an evidence dossier for a person rather than a verifier: what
+the receipt shows (this record, exactly as shown, was sealed at that time and has not changed since), which article
+each field relates to according to the record's regime pack, whether every field the pack lists as required is
+present, and, as plainly, what it does not show: that the content is true, that any law was complied with, or that a
+court will accept it. The pack used is kept in `packs/`, fetched from https://riskrouter.eu/packs, or read from a
+folder you name with `--packs` (the copies in the public verifier repository work offline).
+
     RISKROUTER_API_KEY=rr_... npx -p riskrouter-recorder riskrouter-inspector --journal ./advice-files/.riskrouter-receipts/evidence-journal.jsonl \
       --from 2026-10-01 --to 2026-10-31 --chain folder:advice-files --title "Advice files, October 2026" --out ./inspector-2026-10
     npx -p riskrouter-recorder riskrouter-inspector verify ./inspector-2026-10

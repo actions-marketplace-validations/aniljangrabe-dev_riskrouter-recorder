@@ -34,6 +34,7 @@
     "folderseal.mjs",
     "dbseal.mjs",
     "inspector.mjs",
+    "dossier.mjs",
     "README.md",
     "LICENSE"
   ],

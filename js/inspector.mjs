@@ -15,7 +15,10 @@
  * chain named (none of its records left out), the log's public signing key,
  * an index.html that lists every record and says how to check them (it runs
  * no script and makes no request), and MANIFEST.json, which lists every file
- * with its SHA-256. The manifest's own digest is sealed too, as an
+ * with its SHA-256. Each record also gets a page of its own in records/, for a
+ * person to read: what the receipt shows, which article each field relates to
+ * according to the record's regime pack (the pack used is kept in packs/), and
+ * what the receipt does not show (dossier.mjs). The manifest's own digest is sealed too, as an
  * `evidence.export` record, so the handover is itself evidence of what was
  * handed over and when.
  *
@@ -28,10 +31,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRecorder, recordDigest, KIND as KIND_PATTERN } from './recorder.mjs';
+import { packCoverage, dossierHtml } from './dossier.mjs';
 
 export const FORMAT = 'riskrouter-inspector-file|1';
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const REF = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const PACK_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const PACK_FORMAT = 'riskrouter-regime-pack|1';
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -57,13 +63,14 @@ const HOW = [
   '2. Offline: python3 riskrouter_verify.py receipts/<n>.json --key signing-key.json  (the verifier is one file, standard library only:',
   '   https://riskrouter.eu/kit/verifier/riskrouter_verify.py, and at https://github.com/aniljangrabe-dev/riskrouter-verify).',
   '3. Compare signing-key.json with the key published at https://github.com/aniljangrabe-dev/riskrouter-verify (anchors/), so the key is not only ours to vouch for.',
+  'Each page in records/ explains one record for a person: what its receipt shows, which article each field relates to according to its regime pack (kept in packs/), and what it does not show.',
   'Each file in completeness/ shows a chain is complete: python3 riskrouter_verify.py completeness/<name>.json --key signing-key.json.',
   'MANIFEST.json lists every file here with its SHA-256; its own digest is sealed (MANIFEST.riskrouter-receipt.json), so the file set cannot be changed unseen.'
 ];
 
 function indexHtml({ title, period, rows, chains, exportedAt }) {
   const tr = rows.map((r) => `<tr><td>${esc(r.leaf_index)}</td><td>${esc(r.created_at)}</td><td>${esc(r.kind)}</td><td>${esc(r.label)}</td>` +
-    `<td><code>${esc(r.record_digest.slice(0, 16))}…</code></td><td><a href="${esc(r.receipt)}">${esc(r.receipt)}</a></td></tr>`).join('\n');
+    `<td><code>${esc(r.record_digest.slice(0, 16))}…</code></td><td><a href="${esc(r.dossier)}">dossier</a></td><td><a href="${esc(r.receipt)}">${esc(r.receipt)}</a></td></tr>`).join('\n');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -80,7 +87,7 @@ public log as a salted SHA-256 digest; the record itself never left its holder. 
 ${HOW.map((l) => `<p>${esc(l)}</p>`).join('\n')}
 ${chains.length ? `<h2>Completeness</h2>\n<ul>${chains.map((c) => `<li><a href="${esc(c.file)}">${esc(c.name)}</a>: ${esc(c.records)} record(s) in the chain</li>`).join('')}</ul>` : ''}
 <h2>Records</h2>
-<table><thead><tr><th>Entry</th><th>Sealed at</th><th>Kind</th><th>About</th><th>Digest</th><th>Receipt</th></tr></thead>
+<table><thead><tr><th>Entry</th><th>Sealed at</th><th>Kind</th><th>About</th><th>Digest</th><th>Explained</th><th>Receipt</th></tr></thead>
 <tbody>
 ${tr}
 </tbody></table>
@@ -97,9 +104,12 @@ ${tr}
  * @param {string} [o.to]       YYYY-MM-DD, the last day sealed
  * @param {string[]} [o.kinds]  only records of these kinds
  * @param {string[]} [o.chains] completeness chains to include, by name (needs the recorder's chainSecret)
+ * @param {string} [o.packsDir] read regime packs from this folder (<id>.json) instead of fetching them from packsBase
+ * @param {string} [o.packsBase] where packs are published (default https://riskrouter.eu/packs)
  */
 export async function exportInspectorFile({ recorder, journal, out, from = null, to = null, kinds = [], chains = [], title = null, exportedBy = null,
-  api = process.env.RISKROUTER_BASE || 'https://api.riskrouter.eu', fetchImpl = globalThis.fetch, now = () => new Date() }) {
+  api = process.env.RISKROUTER_BASE || 'https://api.riskrouter.eu', fetchImpl = globalThis.fetch, now = () => new Date(),
+  packsDir = null, packsBase = 'https://riskrouter.eu/packs' }) {
   if (from !== null && !DATE.test(from)) throw new Error('--from is YYYY-MM-DD');
   if (to !== null && !DATE.test(to)) throw new Error('--to is YYYY-MM-DD');
   for (const k of kinds) if (!KIND_PATTERN.test(k)) throw new Error(`${k} is not a kind`);
@@ -121,11 +131,37 @@ export async function exportInspectorFile({ recorder, journal, out, from = null,
   };
   const json = (v) => Buffer.from(`${JSON.stringify(v, null, 2)}\n`);
 
+  // The regime packs the records name, each read once and kept in the folder, so a page's article mapping
+  // can always be traced to the exact pack it used. A pack that cannot be had leaves its records unmapped,
+  // and their pages say so; it never stops the export.
+  const packs = new Map();
+  for (const id of new Set(chosen.map((e) => e.record.pack).filter((x) => typeof x === 'string' && PACK_ID.test(x)))) {
+    let bytes = null;
+    try {
+      if (packsDir) bytes = fs.readFileSync(path.join(packsDir, `${id}.json`));
+      else {
+        const res = await fetchImpl(`${String(packsBase).replace(/\/+$/, '')}/${id}.json`, { signal: AbortSignal.timeout(20000) });
+        if (res.ok) bytes = Buffer.from(await res.arrayBuffer());
+      }
+    } catch { bytes = null; }
+    if (!bytes) continue;
+    let pack;
+    try { pack = JSON.parse(bytes); } catch { continue; }
+    if (pack?.format !== PACK_FORMAT || pack.id !== id || !Array.isArray(pack.kinds)) continue;
+    keep(`packs/${id}.json`, bytes);
+    packs.set(id, pack);
+  }
+
   const rows = [];
   for (const e of chosen) {
-    const receipt = `receipts/${String(e.leaf_index).padStart(10, '0')}.json`;
+    const n = String(e.leaf_index).padStart(10, '0');
+    const receipt = `receipts/${n}.json`;
+    const dossier = `records/${n}.html`;
     keep(receipt, json(await recorder.bundle(e.record_digest)));
-    rows.push({ leaf_index: e.leaf_index, created_at: e.created_at, kind: e.kind, label: labelOf(e.record), record_digest: e.record_digest, receipt });
+    const pack = packs.get(e.record.pack) || null;
+    const coverage = packCoverage(e.record, pack);
+    keep(dossier, Buffer.from(dossierHtml({ record: e.record, entry: e, receipt, coverage, packFile: pack ? `packs/${pack.id}.json` : null })));
+    rows.push({ leaf_index: e.leaf_index, created_at: e.created_at, kind: e.kind, label: labelOf(e.record), record_digest: e.record_digest, receipt, dossier });
   }
   const chainRows = [];
   for (const name of chains) {
@@ -208,7 +244,7 @@ async function main() {
     process.exit(r.ok ? 0 : 1);
   }
   if (!flag('--out') || !flag('--journal')) {
-    console.error('usage: riskrouter-inspector --journal <file> --out <new folder> [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--kind k]... [--chain name]... [--title text] [--by <your ref>]\n' +
+    console.error('usage: riskrouter-inspector --journal <file> --out <new folder> [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--kind k]... [--chain name]... [--title text] [--by <your ref>] [--packs <folder>]\n' +
       '       riskrouter-inspector verify <folder>');
     process.exit(2);
   }
@@ -219,7 +255,7 @@ async function main() {
   const recorder = createRecorder({ journal: flag('--journal'), flushIntervalMs: 3_600_000 });
   try {
     const r = await exportInspectorFile({ recorder, journal: flag('--journal'), out: flag('--out'), from: flag('--from', null), to: flag('--to', null),
-      kinds: all('--kind'), chains: all('--chain'), title: flag('--title', null), exportedBy: flag('--by', null) });
+      kinds: all('--kind'), chains: all('--chain'), title: flag('--title', null), exportedBy: flag('--by', null), packsDir: flag('--packs', null) });
     console.log(`wrote ${r.records} receipt(s) and ${r.chains} completeness statement(s) to ${r.out}; open ${path.join(r.out, 'index.html')}`);
     if (r.error) { console.error(`riskrouter-inspector: the manifest is written but not sealed yet (${r.error})`); process.exitCode = 1; }
   } finally {
