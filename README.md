@@ -66,7 +66,7 @@ jobs:
       - run: gh release download "$GITHUB_REF_NAME" --dir dist
         env: { GH_TOKEN: "${{ github.token }}" }
       - id: seal
-        uses: aniljangrabe-dev/riskrouter-recorder@main
+        uses: aniljangrabe-dev/riskrouter-recorder@v1.0.0
         with:
           api-key: ${{ secrets.RISKROUTER_API_KEY }}   # free sandbox key: https://riskrouter.eu/integrate
           files: dist/*
